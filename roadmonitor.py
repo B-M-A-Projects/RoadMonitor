@@ -61,8 +61,8 @@ MPERPIXEL_R_TO_L = 0.029
 MIN_SPEED = 10
 MAX_SPEED = 100
 PICTURE_LIMIT = 65
-SAVE_CSV = True
-SAVE_PICTURE = True
+SAVE_CSV = False
+SAVE_PICTURE = False
 #THRESHOLD = 15
 MIN_AREA = 500
 #BLURSIZE = (15,15)
@@ -83,6 +83,7 @@ LEFT_TO_RIGHT = 1
 RIGHT_TO_LEFT = 2
 TOO_FEW_MEASUREMENTS = 1
 DIRECTION_CHANGED = 2
+TOO_HIGH_DIFF = 3
 DATA_OK = 0
 
 # state maintains the state of the speed computation process
@@ -133,6 +134,12 @@ cars_per_hour = 0
 cars_per_day = 0
 cars_in_total = 0
 tracking_lost = 0
+noise_cnt = 0
+cnt_too_few_meas = 0
+cnt_too_high_diff = 0
+cnt_dir_chg = 0
+left_to_right_cnt_per_hour = 0
+right_to_left_cnt_per_hour = 0
 
 # initialize the camera. Adjust vflip and hflip to reflect your camera's orientation
 camera = PiCamera()
@@ -266,7 +273,7 @@ for frame in camera.capture_continuous(rawCapture, format="bgr", use_video_port=
             data_code = DATA_OK
             text_on_image = 'Tracking'
             print(text_on_image)
-            print("x-chg    Secs      kmh  x-pos width y-pos dir meas")
+            print("x-chg    Secs      kmh  x-pos width y-pos dir meas  diff")
         # tracking ongoing
         else:
             # compute the lapsed time
@@ -298,12 +305,21 @@ for frame in camera.capture_continuous(rawCapture, format="bgr", use_video_port=
                 else:
                     if last_dir != direction:
                         # Direction has changed, disqualify data
-                        #print(last_dir)
                         data_code = DIRECTION_CHANGED
                         
                 kmh = get_speed(abs_chg,mperpixel,secs)
+                if measurements == 0:
+                    kmh_chg = 0
+                else:
+                    if last_kmh > 0:
+                        kmh_chg = (kmh - last_kmh) / last_kmh * 100
+                        abs(kmh_chg)
+                        if kmh_chg > 100:
+                            data_code = TOO_HIGH_DIFF
+
                 measurements += 1
-                print("{0:4d}  {1:7.2f}  {2:7.0f}   {3:4d}  {4:4d} {5:5d} {6:3d}  {7:3d}".format(abs_chg,secs,kmh,x,w,y,direction,measurements))
+
+                print("{0:4d}  {1:7.2f}  {2:7.0f}   {3:4d}  {4:4d} {5:5d} {6:3d}  {7:3d}  {8:3.0f}%".format(abs_chg,secs,kmh,x,w,y,direction,measurements,kmh_chg))
                 
                 # Is front of object outside the monitired boundary then stop motion tracking
                 if ((x <= 2) and (direction == RIGHT_TO_LEFT)) \
@@ -337,6 +353,13 @@ for frame in camera.capture_continuous(rawCapture, format="bgr", use_video_port=
                         # Evaluate number of measurements
                         if measurements < MEASURMENTS_REQUIRED:
                             data_code = TOO_FEW_MEASUREMENTS
+                            cnt_too_few_meas += 1
+
+                        if data_code == DIRECTION_CHANGED:
+                            cnt_dir_chg += 1
+
+                        if data_code == TOO_HIGH_DIFF:
+                            cnt_too_high_diff += 1
 
                         # Measurement is valid and counters to be incremented           
                         if data_code == DATA_OK:
@@ -349,12 +372,32 @@ for frame in camera.capture_continuous(rawCapture, format="bgr", use_video_port=
                                         "measurement" : "hour_stats",
                                         "fields" : {
                                             "cars_per_hour": cars_per_hour,
-                                            "hour_avg_speed": float(hour_avg_speed)
+                                            "hour_avg_speed": float(hour_avg_speed),
+                                            "noise_cnt": noise_cnt,
+                                            "tracking_lost": tracking_lost,
+                                            "left_to_right": left_to_right_cnt_per_hour,
+                                            "right_to_left": right_to_left_cnt_per_hour,
+                                            "cnt_dir_chg": cnt_dir_chg,
+                                            "cnt_too_few_meas": cnt_too_few_meas,
+                                            "cnt_too_high_diff": cnt_too_high_diff
                                         }
                                     }
                                 ]
                                 logging_hour = cap_time.strftime('%H')
-                                cars_per_hour = 1 # reset hour counters
+                                # reset hour counters
+                                noise_cnt = 0
+                                tracking_lost = 0
+                                cars_per_hour = 1
+                                cnt_too_few_meas = 0
+                                cnt_dir_chg = 0
+                                cnt_too_high_diff = 0
+                                if direction == LEFT_TO_RIGHT:
+                                    left_to_right_cnt_per_hour = 1
+                                    right_to_left_cnt_per_hour = 0
+                                else:
+                                    right_to_left_cnt_per_hour = 1
+                                    left_to_right_cnt_per_hour = 0
+                                
                                 hour_avg_speed = kmh
                                 hour_sum_of_speed = kmh
                                 
@@ -385,26 +428,24 @@ for frame in camera.capture_continuous(rawCapture, format="bgr", use_video_port=
                                 hour_sum_of_speed = hour_sum_of_speed + kmh
                                 hour_avg_speed = hour_sum_of_speed / cars_per_hour
                                 
+                                if direction == LEFT_TO_RIGHT:
+                                    left_to_right_cnt_per_hour += 1
+                                else:
+                                    right_to_left_cnt_per_hour += 1
+
                                 cars_per_day += 1
                                 day_sum_of_speed = day_sum_of_speed + kmh
                                 day_avg_speed = day_sum_of_speed / cars_per_day
-                                
-                            cars_in_total += 1
-                            #total_sum_of_speed = total_sum_of_speed + kmh
-                            #total_avg_speed = total_sum_of_speed / cars_in_total
                             
                         # Print some debug/stats
                         print("Cars per hour:           {}".format(cars_per_hour))
                         print("Cars per day:            {}".format(cars_per_day))
-                        print("Cars in total:           {}".format(cars_in_total))
                         print("Last speed recorded:     {}".format("%.2f" % kmh))                        
                         print("Average speed per hour:  {}".format("%.2f" % hour_avg_speed))
                         print("Average speed per day:   {}".format("%.2f" % day_avg_speed))
-                        #print("Average speed in total:  {}".format("%.2f" % total_avg_speed))
                         print("Last direction recorded: {}".format(direction))
                         print("Measurements:            {}".format(measurements))
                         print("Data code:               {}".format(data_code))
-                        #print("Tracking lost:           {}".format(tracking_lost))
                         
                         speed_data = [
                             {
@@ -415,7 +456,6 @@ for frame in camera.capture_continuous(rawCapture, format="bgr", use_video_port=
                                 },
                                 "fields" : {
                                     "speed": float(kmh)
-                                  #  "total_avg_speed" : float(total_avg_speed),
                                 }
                             }
                         ]
@@ -431,7 +471,7 @@ for frame in camera.capture_continuous(rawCapture, format="bgr", use_video_port=
                             client.write_points(day_stats)
                             save_day_stats = False
                         
-                    state = SAVING #Why is this needed? Check later
+                    state = SAVING
                 
                 # if the object hasn't reached the end of the monitored area, just remember the speed, 
                 # its last position and direction
@@ -440,10 +480,19 @@ for frame in camera.capture_continuous(rawCapture, format="bgr", use_video_port=
                 last_dir = direction
     else:
         if state != WAITING:
-            state = WAITING
+            if state == TRACKING:
+                if measurements == 0:
+                    noise_cnt += 1
+                    print("Just noise")
+                else:
+                    tracking_lost += 1
+                    print("Tracking lost")
+                        
+                print(noise_cnt)
+                print(tracking_lost)
+
             text_on_image = 'Waiting for cars'
-            print("Tracking lost")
-            tracking_lost += 1 
+            state = WAITING
 
     # Print text and timestamp on frame
     cv2.putText(image, datetime.datetime.now().strftime("%A %d %B %Y %I:%M:%S%p"),
